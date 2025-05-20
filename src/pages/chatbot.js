@@ -1,10 +1,10 @@
 import { useRouter } from "next/router";
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
-import Header from "./components/Header";
-import Sidebar from "./components/Sidebar";
-import ChatMessage from "./components/ChatMessage";
-import ChatInput from "./components/ChatInput";
+import Header from "../components/Header";
+import Sidebar from "../components/Sidebar";
+import ChatMessage from "../components/ChatMessage";
+import ChatInput from "../components/ChatInput";
 import { supabase } from "../supabase";
 
 export default function Chatbot() {
@@ -18,7 +18,7 @@ export default function Chatbot() {
 
   const bottomRef = useRef(null);
 
-  // Scroll to bottom when messages update
+  // Scroll to bottom on messages change
   useEffect(() => {
     if (bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: "smooth" });
@@ -28,17 +28,37 @@ export default function Chatbot() {
   // Fetch user session
   useEffect(() => {
     const getSession = async () => {
-      const { data } = await supabase.auth.getUser();
-      if (!data?.user) router.push("/login");
-      else setUser(data.user);
+      const { data: sessionData, error } = await supabase.auth.getSession();
+      if (error) {
+        console.error("Error fetching session:", error);
+        router.push("/login");
+        return;
+      }
+      if (!sessionData?.session?.user) {
+        router.push("/login");
+      } else {
+        setUser(sessionData.session.user);
+      }
     };
     getSession();
-  }, []);
+
+    // Optional: listen for auth state changes to handle logout elsewhere
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT") {
+        router.push("/login");
+      }
+    });
+
+    return () => {
+      listener?.subscription.unsubscribe();
+    };
+  }, [router]);
 
   // Fetch user's chats
   useEffect(() => {
     const fetchChats = async () => {
       if (!user) return;
+
       const { data, error } = await supabase
         .from("chats")
         .select("id, title")
@@ -57,13 +77,21 @@ export default function Chatbot() {
 
   // Fetch messages for selected chat
   useEffect(() => {
-    if (!chatId) return;
+    if (!chatId) {
+      setMessages([]);
+      return;
+    }
     const fetchMessages = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("messages")
-        .select("sender, text")
+        .select("id, sender, text")
         .eq("chat_id", chatId)
         .order("created_at", { ascending: true });
+
+      if (error) {
+        console.error("Error fetching messages:", error);
+        return;
+      }
       setMessages(data || []);
     };
     fetchMessages();
@@ -71,7 +99,7 @@ export default function Chatbot() {
 
   // Handle sending message
   const handleSend = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || loading) return;
 
     let currentChatId = chatId;
 
@@ -88,17 +116,20 @@ export default function Chatbot() {
         .select()
         .single();
 
-      if (newChat) {
-        currentChatId = newChat.id;
-        setChatId(newChat.id);
-        setChats((prev) => [newChat, ...prev]);
+      if (error) {
+        console.error("Error creating chat:", error);
+        return;
       }
+
+      currentChatId = newChat.id;
+      setChatId(newChat.id);
+      setChats((prev) => [newChat, ...prev]);
     }
 
     const userMessage = { sender: "user", text: input };
     const thinkingMessage = { sender: "bot", text: "Thinking..." };
 
-    // Show user message and Thinking placeholder immediately
+    // Optimistically update UI
     setMessages((prev) => [...prev, userMessage, thinkingMessage]);
     setLoading(true);
     setInput("");
@@ -111,7 +142,6 @@ export default function Chatbot() {
       });
 
       setMessages((prev) => {
-        // Replace last "Thinking..." with actual response
         const newMessages = [...prev];
         newMessages[newMessages.length - 1] = {
           sender: "bot",
@@ -148,7 +178,7 @@ export default function Chatbot() {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
           chats={chats}
-          onSelectChat={setChatId}
+          onSelectChat={(id) => setChatId(id)}
           onStartNewChat={() => {
             setChatId(null);
             setMessages([]);
@@ -157,16 +187,16 @@ export default function Chatbot() {
         />
         <div className="flex flex-col flex-1 bg-gray-100">
           <div className="flex-1 overflow-y-auto p-6">
-            {messages.map((msg, idx) => (
-              <ChatMessage key={idx} sender={msg.sender} text={msg.text} />
+            {messages?.map((msg, idx) => (
+              <ChatMessage key={msg.id ?? idx} sender={msg.sender} text={msg.text} />
             ))}
-            <div ref={bottomRef}></div>
+            <div ref={bottomRef} />
           </div>
           <ChatInput
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onSend={handleSend}
-            disabled={loading}
+            disabled={loading || !input.trim()}
           />
         </div>
       </div>
